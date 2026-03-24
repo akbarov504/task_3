@@ -2,15 +2,15 @@ import can
 import time
 import json
 
-# ---------------- RESET FUNCTION ----------------
+# ---------------- DATA ----------------
 
-def reset_data():
+def init_data():
     return {
         "vehicle_speed": 0.0,
         "engine_speed": None,
         "wheel_based_speed": 0.0,
         "fuel_level": 0.0,
-        "trip_distance": None,
+        "trip_distance": 0.0,
         "total_distance": 0.0,
         "engine_load": None,
         "engine_temp": None,
@@ -21,10 +21,13 @@ def reset_data():
     }
 
 
-data = reset_data()
-last_msg_time = 0
+data = init_data()
 
-# Fuel tanks
+# runtime variables
+last_msg_time = 0
+last_total_distance = None
+trip_distance = 0.0
+
 fuel_tank_1 = None
 fuel_tank_2 = None
 
@@ -45,18 +48,31 @@ def extract_pgn(arbitration_id):
     return (pf << 8) | ps
 
 
+def kmh_to_mph(kmh):
+    return kmh * 0.621371
+
+
+# ---------------- RESET (ONLY RUNTIME) ----------------
+
+def reset_runtime():
+    data["vehicle_speed"] = 0.0
+    data["engine_speed"] = None
+    data["wheel_based_speed"] = 0.0
+    data["engine_load"] = None
+    data["engine_temp"] = None
+    data["fuel_level"] = 0.0
+    data["status"] = "OFF"
+
+
 # ---------------- DECODERS ----------------
 
 def decode_rpm(d):
     raw = d[3] | (d[4] << 8)
-    if raw >= 0xFFFA:
-        return None
-    return raw * 0.125
+    return None if raw >= 0xFFFA else raw * 0.125
 
 
 def decode_engine_load(d):
-    raw = d[2]
-    return None if raw == 0xFF else raw
+    return None if d[2] == 0xFF else d[2]
 
 
 def decode_speed(d):
@@ -65,13 +81,11 @@ def decode_speed(d):
 
 
 def decode_temp(d):
-    raw = d[0]
-    return None if raw == 0xFF else raw - 40
+    return None if d[0] == 0xFF else d[0] - 40
 
 
 def decode_fuel(d):
-    raw = d[1]
-    return None if raw == 0xFF else raw * 0.4
+    return None if d[1] == 0xFF else d[1] * 0.4
 
 
 def decode_distance(d):
@@ -85,15 +99,28 @@ def decode_engine_hours(d):
 
 
 def decode_def(d):
-    raw = d[0]
-    return None if raw == 0xFF else raw * 0.4
+    return None if d[0] == 0xFF else d[0] * 0.4
 
 
-# ---------------- BUS ----------------
+# ---------------- VIN REQUEST ----------------
+
+def request_vin(bus):
+    msg = can.Message(
+        arbitration_id=0x18EAFF00,
+        data=[0xEC, 0xFE, 0x00] + [0xFF] * 5,
+        is_extended_id=True
+    )
+    bus.send(msg)
+    print("📤 VIN requested")
+
+
+# ---------------- MAIN ----------------
 
 bus = can.interface.Bus(channel="can0", interface="socketcan")
 
-print("🚀 SYSTEM STARTED")
+request_vin(bus)
+
+print("🚀 FINAL TELEMETRY SYSTEM RUNNING\n")
 
 while True:
     msg = bus.recv(timeout=1)
@@ -104,8 +131,8 @@ while True:
         last_msg_time = now
         data["status"] = "ON"
     elif now - last_msg_time > 3:
-        data = reset_data()
-        print(data)
+        reset_runtime()
+        print(json.dumps(data, indent=4))
         continue
 
     if not msg or not msg.is_extended_id:
@@ -122,8 +149,9 @@ while True:
     elif pgn == 65265:
         speed = decode_speed(msg.data)
         if speed is not None:
-            data["vehicle_speed"] = speed
-            data["wheel_based_speed"] = speed
+            mph = kmh_to_mph(speed)
+            data["vehicle_speed"] = mph
+            data["wheel_based_speed"] = mph
 
     # ---------------- TEMP ----------------
     elif pgn == 65262:
@@ -131,19 +159,18 @@ while True:
         if temp is not None:
             data["engine_temp"] = temp
 
-    # ---------------- FUEL (SMART LOGIC) ----------------
+    # ---------------- FUEL ----------------
     elif pgn == 65276:
-        fuel = decode_fuel(msg.data)
-        if fuel is not None:
-            fuel_tank_1 = fuel
+        f = decode_fuel(msg.data)
+        if f is not None:
+            fuel_tank_1 = f
 
-    # agar 2-chi tank keladigan PGN bo‘lsa shu yerga qo‘shiladi
     elif pgn == 65277:
-        fuel = decode_fuel(msg.data)
-        if fuel is not None:
-            fuel_tank_2 = fuel
+        f = decode_fuel(msg.data)
+        if f is not None:
+            fuel_tank_2 = f
 
-    # 🔥 FUEL CALC
+    # fuel avg logic
     if fuel_tank_1 is not None and fuel_tank_2 is not None:
         data["fuel_level"] = (fuel_tank_1 + fuel_tank_2) / 2
     elif fuel_tank_1 is not None:
@@ -152,15 +179,23 @@ while True:
     # ---------------- DISTANCE ----------------
     elif pgn == 65248:
         dist = decode_distance(msg.data)
+
         if dist is not None:
             data["total_distance"] = dist
-            data["trip_distance"] = dist
+
+            if last_total_distance is not None:
+                delta = dist - last_total_distance
+                if delta > 0:
+                    trip_distance += delta
+
+            last_total_distance = dist
+            data["trip_distance"] = trip_distance
 
     # ---------------- ENGINE HOURS ----------------
     elif pgn == 65253:
-        hours = decode_engine_hours(msg.data)
-        if hours is not None:
-            data["engine_hours"] = hours
+        h = decode_engine_hours(msg.data)
+        if h is not None:
+            data["engine_hours"] = h
 
     # ---------------- DEF ----------------
     elif pgn == 65110:
@@ -178,12 +213,12 @@ while True:
     elif pgn == 0xEB00:
         if not vin_done:
             vin_buffer.extend(msg.data[1:])
-
             if len(vin_buffer) >= vin_expected_size:
                 try:
-                    data["vin"] = vin_buffer[:vin_expected_size].decode(errors="ignore")
+                    data["vin"] = vin_buffer[:vin_expected_size].decode(errors="ignore").strip()
                 except:
                     pass
                 vin_done = True
 
+    # ---------------- OUTPUT ----------------
     print(json.dumps(data, indent=4))
