@@ -1,26 +1,34 @@
 import can
 import time
+import json
 
-# ---------------- DATA STORE ----------------
+# ---------------- RESET FUNCTION ----------------
 
-data = {
-    "vehicle_speed": 0.0,
-    "engine_speed": None,
-    "wheel_based_speed": 0.0,
-    "fuel_level": 0.0,
-    "trip_distance": None,
-    "total_distance": 0.0,
-    "engine_load": None,
-    "engine_temp": None,
-    "vin": "",
-    "def_level": 0.0,
-    "engine_hours": 0.0,
-    "status": "OFF"
-}
+def reset_data():
+    return {
+        "vehicle_speed": 0.0,
+        "engine_speed": None,
+        "wheel_based_speed": 0.0,
+        "fuel_level": 0.0,
+        "trip_distance": None,
+        "total_distance": 0.0,
+        "engine_load": None,
+        "engine_temp": None,
+        "vin": "",
+        "def_level": 0.0,
+        "engine_hours": 0.0,
+        "status": "OFF"
+    }
 
+
+data = reset_data()
 last_msg_time = 0
 
-# VIN buffer
+# Fuel tanks
+fuel_tank_1 = None
+fuel_tank_2 = None
+
+# VIN
 vin_buffer = bytearray()
 vin_expected_size = 0
 vin_done = False
@@ -48,92 +56,59 @@ def decode_rpm(d):
 
 def decode_engine_load(d):
     raw = d[2]
-    if raw == 0xFF:
-        return None
-    return raw
+    return None if raw == 0xFF else raw
 
 
 def decode_speed(d):
     raw = d[1] | (d[2] << 8)
-    if raw == 0xFFFF:
-        return None
-    return raw * 0.00390625
+    return None if raw == 0xFFFF else raw * 0.00390625
 
 
 def decode_temp(d):
     raw = d[0]
-    if raw == 0xFF:
-        return None
-    return raw - 40
+    return None if raw == 0xFF else raw - 40
 
 
 def decode_fuel(d):
     raw = d[1]
-    if raw == 0xFF:
-        return None
-    return raw * 0.4
+    return None if raw == 0xFF else raw * 0.4
 
 
 def decode_distance(d):
     raw = d[0] | (d[1] << 8) | (d[2] << 16) | (d[3] << 24)
-    if raw == 0xFFFFFFFF:
-        return None
-    return raw * 0.125
+    return None if raw == 0xFFFFFFFF else raw * 0.125
 
 
 def decode_engine_hours(d):
     raw = d[0] | (d[1] << 8) | (d[2] << 16) | (d[3] << 24)
-    if raw == 0xFFFFFFFF:
-        return None
-    return raw * 0.05
+    return None if raw == 0xFFFFFFFF else raw * 0.05
 
 
 def decode_def(d):
     raw = d[0]
-    if raw == 0xFF:
-        return None
-    return raw * 0.4
+    return None if raw == 0xFF else raw * 0.4
 
 
-# ---------------- VIN REQUEST ----------------
-
-def request_vin(bus):
-    vin_pgn = [0xEC, 0xFE, 0x00]
-
-    msg = can.Message(
-        arbitration_id=0x18EAFF00,
-        data=vin_pgn + [0xFF] * 5,
-        is_extended_id=True
-    )
-
-    bus.send(msg)
-    print("📤 VIN requested...")
-
-
-# ---------------- MAIN ----------------
+# ---------------- BUS ----------------
 
 bus = can.interface.Bus(channel="can0", interface="socketcan")
 
-request_vin(bus)
-
-print("🚀 FULL TELEMETRY SYSTEM STARTED")
+print("🚀 SYSTEM STARTED")
 
 while True:
     msg = bus.recv(timeout=1)
     now = time.time()
 
-    # STATUS LOGIC
+    # ---------------- STATUS ----------------
     if msg:
         last_msg_time = now
         data["status"] = "ON"
     elif now - last_msg_time > 3:
-        data["status"] = "OFF"
-
-    if not msg:
+        data = reset_data()
         print(data)
         continue
 
-    if not msg.is_extended_id:
+    if not msg or not msg.is_extended_id:
         continue
 
     pgn = extract_pgn(msg.arbitration_id)
@@ -156,11 +131,23 @@ while True:
         if temp is not None:
             data["engine_temp"] = temp
 
-    # ---------------- FUEL ----------------
+    # ---------------- FUEL (SMART LOGIC) ----------------
     elif pgn == 65276:
         fuel = decode_fuel(msg.data)
         if fuel is not None:
-            data["fuel_level"] = fuel
+            fuel_tank_1 = fuel
+
+    # agar 2-chi tank keladigan PGN bo‘lsa shu yerga qo‘shiladi
+    elif pgn == 65277:
+        fuel = decode_fuel(msg.data)
+        if fuel is not None:
+            fuel_tank_2 = fuel
+
+    # 🔥 FUEL CALC
+    if fuel_tank_1 is not None and fuel_tank_2 is not None:
+        data["fuel_level"] = (fuel_tank_1 + fuel_tank_2) / 2
+    elif fuel_tank_1 is not None:
+        data["fuel_level"] = fuel_tank_1
 
     # ---------------- DISTANCE ----------------
     elif pgn == 65248:
@@ -181,25 +168,22 @@ while True:
         if d is not None:
             data["def_level"] = d
 
-    # ---------------- VIN MULTI-FRAME ----------------
-    elif pgn == 0xEC00:  # TP.CM
-        if msg.data[0] == 32:  # BAM
+    # ---------------- VIN ----------------
+    elif pgn == 0xEC00:
+        if msg.data[0] == 32:
             vin_expected_size = msg.data[1] | (msg.data[2] << 8)
             vin_buffer = bytearray()
             vin_done = False
 
-    elif pgn == 0xEB00:  # TP.DT
+    elif pgn == 0xEB00:
         if not vin_done:
             vin_buffer.extend(msg.data[1:])
 
             if len(vin_buffer) >= vin_expected_size:
                 try:
-                    vin = vin_buffer[:vin_expected_size].decode(errors="ignore")
-                    data["vin"] = vin.strip()
-                    print(f"🚗 VIN: {vin}")
+                    data["vin"] = vin_buffer[:vin_expected_size].decode(errors="ignore")
                 except:
                     pass
-
                 vin_done = True
 
-    print(data)
+    print(json.dumps(data, indent=4))
