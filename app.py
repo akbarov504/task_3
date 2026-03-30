@@ -285,7 +285,7 @@ def can_reader() -> None:
             dist_km = decode_distance_km(msg.data)
             if dist_km is not None:
                 dist_miles = km_to_miles(dist_km)
-                data["total_distance"] = dist_miles
+                data["total_distance"] = round(dist_miles, 2)
 
                 if trip_start_total_distance_miles is None:
                     trip_start_total_distance_miles = dist_miles
