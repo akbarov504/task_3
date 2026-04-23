@@ -1,4 +1,3 @@
-import time
 import uuid
 import requests
 from threading import Lock
