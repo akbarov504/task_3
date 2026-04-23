@@ -245,4 +245,6 @@ def get_state_code():
     return _gps_data["state_code"]
 
 if __name__ == "__main__":
-    
+    while True:
+        print(f"Lat: {get_latitude():.6f}, Lon: {get_longitude():.6f}, Speed: {get_speed_mph():.1f} mph, Dir: {get_direction()} ({get_degree()}°), State: {get_state()} ({get_state_code()})")
+        time.sleep(1)
