@@ -177,7 +177,7 @@ def _open_serial():
         try:
             ser = serial.Serial(PORT, BAUD, timeout=1)
             return ser
-        except serial.SerialException:
+        except Exception:
             time.sleep(2)
 
 def _gps_thread():
@@ -213,7 +213,7 @@ def _gps_thread():
                         _gps_data["state"], _gps_data["state_code"] = get_state_and_code(msg.latitude, msg.longitude)
                 except pynmea2.ParseError:
                     pass
-        except serial.SerialException:
+        except Exception:
             ser.close()
             ser = _open_serial()
 
