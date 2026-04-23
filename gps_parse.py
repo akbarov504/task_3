@@ -217,10 +217,6 @@ def _gps_thread():
             ser.close()
             ser = _open_serial()
 
-# Start background GPS reading when module is imported
-thread = threading.Thread(target=_gps_thread, daemon=True)
-thread.start()
-
 # 🧭 Public getter functions
 def get_latitude():
     return _gps_data["lat"]
@@ -243,17 +239,7 @@ def get_state():
 def get_state_code():
     return _gps_data["state_code"]
 
-def _print_gps_loop():
+if __name__ == "__main__":
     while True:
-        print(
-            f"Lat: {get_latitude():.6f}, "
-            f"Lon: {get_longitude():.6f}, "
-            f"Speed: {get_speed_mph():.1f} mph, "
-            f"Dir: {get_direction()} ({get_degree()}°), "
-            f"State: {get_state()} ({get_state_code()})"
-        )
+        print(f"Lat: {get_latitude():.6f}, Lon: {get_longitude():.6f}, Speed: {get_speed_mph():.1f} mph, Dir: {get_direction()} ({get_degree()}°), State: {get_state()} ({get_state_code()})")
         time.sleep(1)
-
-
-printer_thread = threading.Thread(target=_print_gps_loop, daemon=True)
-printer_thread.start()
