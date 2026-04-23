@@ -438,24 +438,31 @@ def can_reader() -> None:
 PORT = "/dev/ttyUSB1"
 BAUD = 115200
 
-gps_data = {
+# Shared data (will be updated by background thread)
+_gps_data = {
     "lat": 0.0,
     "lon": 0.0,
     "speed_mph": 0.0,
     "direction": "NW",
     "degree": 0.0,
     "state": "N/A",
-    "state_code": "N/A",
-    "timestamp": None
+    "state_code": "N/A"
 }
 
+# --- CONFIGURATION (Matching gps_parse.py) ---
+# Primary absolute path
 GEOJSON_DIR_ABS = "/usr/local/share/geoJSON"
+# Fallback relative path
 GEOJSON_DIR_REL = "./geoJSON"
 
 _state_boundaries = []
 
-
 def _is_point_in_poly(x, y, poly):
+    """
+    Ray-casting algorithm to check if point (x,y) is inside polygon.
+    x: longitude, y: latitude
+    poly: list of [lon, lat] points
+    """
     n = len(poly)
     inside = False
     p1x, p1y = poly[0]
@@ -471,10 +478,11 @@ def _is_point_in_poly(x, y, poly):
         p1x, p1y = p2x, p2y
     return inside
 
-
 def _load_boundaries():
+    """Loads GeoJSON files from directory and calculates bounding boxes for speed optimization."""
     global _state_boundaries
-
+    
+    # Determine which directory to use
     target_dir = GEOJSON_DIR_ABS
     if not os.path.exists(target_dir):
         if os.path.exists(GEOJSON_DIR_REL):
@@ -485,7 +493,7 @@ def _load_boundaries():
 
     print(f"Loading state boundaries from {target_dir}...")
     count = 0
-
+    
     try:
         files = sorted(os.listdir(target_dir))
     except OSError:
@@ -497,46 +505,39 @@ def _load_boundaries():
             try:
                 with open(os.path.join(target_dir, fname), "r") as f:
                     data = json.load(f)
-
+                    
                     if data.get("type") == "FeatureCollection":
-                        features = data.get("features", [])
-                        if features:
-                            data = features[0]
+                         features = data.get("features", [])
+                         if features: data = features[0]
 
                     props = data.get("properties", {})
                     name = props.get("name", "Unknown")
                     abbr = props.get("abbreviation", "UNK")
                     geometry = data.get("geometry", {})
-
+                    
                     min_x, min_y, max_x, max_y = 180.0, 90.0, -180.0, -90.0
-
+                    
                     def update_bbox(ring):
                         nonlocal min_x, min_y, max_x, max_y
                         for p in ring:
                             px, py = p
-                            if px < min_x:
-                                min_x = px
-                            if px > max_x:
-                                max_x = px
-                            if py < min_y:
-                                min_y = py
-                            if py > max_y:
-                                max_y = py
-
+                            if px < min_x: min_x = px
+                            if px > max_x: max_x = px
+                            if py < min_y: min_y = py
+                            if py > max_y: max_y = py
+                            
                     gtype = geometry.get("type")
                     coords = geometry.get("coordinates")
-
+                    
                     valid = False
                     if gtype == "Polygon":
-                        for ring in coords:
-                            update_bbox(ring)
+                        for ring in coords: update_bbox(ring)
                         valid = True
                     elif gtype == "MultiPolygon":
                         for poly in coords:
-                            for ring in poly:
-                                update_bbox(ring)
+                            for ring in poly: update_bbox(ring)
                         valid = True
-
+                        
                     if valid:
                         _state_boundaries.append({
                             "name": name,
@@ -547,23 +548,24 @@ def _load_boundaries():
                         count += 1
             except Exception as e:
                 print(f"Error loading {fname}: {e}")
-
     print(f"Loaded {count} state boundaries.")
 
-
 def get_state_and_code(lat, lon):
+    """Finds state by checking if point is inside loaded polygons."""
     if not _state_boundaries:
         return "N/A", "N/A"
-
+        
     for state in _state_boundaries:
+        # 1. Fast Bounding Box Check
         min_x, min_y, max_x, max_y = state["bbox"]
         if not (min_x <= lon <= max_x and min_y <= lat <= max_y):
             continue
-
+            
+        # 2. Precise Polygon Check
         geom = state["geometry"]
         gtype = geom.get("type")
         coords = geom.get("coordinates")
-
+        
         found = False
         if gtype == "Polygon":
             if _is_point_in_poly(lon, lat, coords[0]):
@@ -573,17 +575,15 @@ def get_state_and_code(lat, lon):
                 if _is_point_in_poly(lon, lat, poly[0]):
                     found = True
                     break
-
+        
         if found:
             return state["name"], state["abbr"]
 
     return "N/A", "N/A"
 
-
 def _degrees_to_direction(deg):
-    if deg is None or deg == "":
+    if deg is None:
         return "NW"
-
     deg = float(deg)
     if (deg >= 337.5) or (deg < 22.5):
         return "N"
@@ -602,64 +602,52 @@ def _degrees_to_direction(deg):
     else:
         return "NW"
 
-
 def _open_serial():
     while True:
         try:
             ser = serial.Serial(PORT, BAUD, timeout=1)
-            print(f"[INFO] GPS serial opened: {PORT}")
             return ser
-        except Exception:
-            print(f"[WARN] GPS serial not available: {PORT}, retrying...")
+        except Exception as e:
+            print(f"Error opening serial port: {e}")
             time.sleep(2)
 
-
 def gps_reader():
-    _load_boundaries()
     ser = _open_serial()
-
+    
+    _load_boundaries()
     while True:
         try:
-            line = ser.readline().decode("ascii", errors="replace").strip()
-
-            if line.startswith("$GPRMC"):
+            line = ser.readline().decode('ascii', errors='replace').strip()
+            if line.startswith('$GPRMC'):
                 try:
                     msg = pynmea2.parse(line)
 
-                    gps_data["lat"] = msg.latitude
-                    gps_data["lon"] = msg.longitude
+                    # Latitude / Longitude
+                    _gps_data["lat"] = msg.latitude
+                    _gps_data["lon"] = msg.longitude
 
+                    # Speed
                     speed_knots = msg.spd_over_grnd
                     if speed_knots is None or speed_knots == "":
                         speed_knots = 0.0
                     else:
                         speed_knots = float(speed_knots)
+                    _gps_data["speed_mph"] = speed_knots * 1.15078
 
-                    gps_data["speed_mph"] = round(speed_knots * 1.15078, 2)
-                    gps_data["direction"] = _degrees_to_direction(msg.true_course)
-                    gps_data["degree"] = float(msg.true_course) if msg.true_course not in (None, "") else 0.0
-                    gps_data["timestamp"] = now_iso()
-
-                    if _state_boundaries:
-                        gps_data["state"], gps_data["state_code"] = get_state_and_code(
-                            msg.latitude, msg.longitude
-                        )
+                    # Direction
+                    _gps_data["direction"] = _degrees_to_direction(msg.true_course)
+                    _gps_data["degree"] = msg.true_course
+                    if not _state_boundaries:
+                        print("No boundaries loaded. Exiting.")
+                        _gps_data["state"], _gps_data["state_code"] = "N/A", "N/A"
                     else:
-                        gps_data["state"], gps_data["state_code"] = "N/A", "N/A"
-
+                        _gps_data["state"], _gps_data["state_code"] = get_state_and_code(msg.latitude, msg.longitude)
                 except pynmea2.ParseError:
                     pass
-
-        except serial.SerialException:
-            try:
-                ser.close()
-            except Exception:
-                pass
-            ser = _open_serial()
         except Exception as e:
-            print(f"[ERROR] GPS reader error: {e}")
-            time.sleep(1)
-
+            print(f"Error reading GPS data: {e}")
+            ser.close()
+            ser = _open_serial()
 
 # =========================
 # SINGLE API
@@ -668,7 +656,7 @@ def gps_reader():
 def get_telemetry():
     return jsonify({
         "can": can_data,
-        "gps": gps_data
+        "gps": _gps_data
     })
 
 
