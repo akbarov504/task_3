@@ -5,11 +5,11 @@ import threading
 import os
 import json
 
-PORT = "/dev/ttyUSB3"
+PORT = "/dev/ttyUSB1"
 BAUD = 115200
 
 # Shared data (will be updated by background thread)
-_gps_data = {
+gps_data = {
     "lat": 0.0,
     "lon": 0.0,
     "speed_mph": 0.0,
@@ -25,9 +25,9 @@ GEOJSON_DIR_ABS = "/usr/local/share/geoJSON"
 # Fallback relative path
 GEOJSON_DIR_REL = "./geoJSON"
 
-_state_boundaries = []
+state_boundaries = []
 
-def _is_point_in_poly(x, y, poly):
+def is_point_in_poly(x, y, poly):
     """
     Ray-casting algorithm to check if point (x,y) is inside polygon.
     x: longitude, y: latitude
@@ -48,9 +48,9 @@ def _is_point_in_poly(x, y, poly):
         p1x, p1y = p2x, p2y
     return inside
 
-def _load_boundaries():
+def load_boundaries():
     """Loads GeoJSON files from directory and calculates bounding boxes for speed optimization."""
-    global _state_boundaries
+    global state_boundaries
     
     # Determine which directory to use
     target_dir = GEOJSON_DIR_ABS
@@ -109,7 +109,7 @@ def _load_boundaries():
                         valid = True
                         
                     if valid:
-                        _state_boundaries.append({
+                        state_boundaries.append({
                             "name": name,
                             "abbr": abbr,
                             "geometry": geometry,
@@ -122,10 +122,10 @@ def _load_boundaries():
 
 def get_state_and_code(lat, lon):
     """Finds state by checking if point is inside loaded polygons."""
-    if not _state_boundaries:
+    if not state_boundaries:
         return "N/A", "N/A"
         
-    for state in _state_boundaries:
+    for state in state_boundaries:
         # 1. Fast Bounding Box Check
         min_x, min_y, max_x, max_y = state["bbox"]
         if not (min_x <= lon <= max_x and min_y <= lat <= max_y):
@@ -138,11 +138,11 @@ def get_state_and_code(lat, lon):
         
         found = False
         if gtype == "Polygon":
-            if _is_point_in_poly(lon, lat, coords[0]):
+            if is_point_in_poly(lon, lat, coords[0]):
                 found = True
         elif gtype == "MultiPolygon":
             for poly in coords:
-                if _is_point_in_poly(lon, lat, poly[0]):
+                if is_point_in_poly(lon, lat, poly[0]):
                     found = True
                     break
         
@@ -151,7 +151,7 @@ def get_state_and_code(lat, lon):
 
     return "N/A", "N/A"
 
-def _degrees_to_direction(deg):
+def degrees_to_direction(deg):
     if deg is None:
         return "NW"
     deg = float(deg)
@@ -172,7 +172,7 @@ def _degrees_to_direction(deg):
     else:
         return "NW"
 
-def _open_serial():
+def open_serial():
     while True:
         try:
             ser = serial.Serial(PORT, BAUD, timeout=1)
@@ -181,9 +181,9 @@ def _open_serial():
             time.sleep(2)
 
 def gps_thread():
-    ser = _open_serial()
+    ser = open_serial()
     
-    _load_boundaries()
+    load_boundaries()
     while True:
         try:
             line = ser.readline().decode('ascii', errors='replace').strip()
@@ -192,8 +192,8 @@ def gps_thread():
                     msg = pynmea2.parse(line)
 
                     # Latitude / Longitude
-                    _gps_data["lat"] = msg.latitude
-                    _gps_data["lon"] = msg.longitude
+                    gps_data["lat"] = msg.latitude
+                    gps_data["lon"] = msg.longitude
 
                     # Speed
                     speed_knots = msg.spd_over_grnd
@@ -201,43 +201,43 @@ def gps_thread():
                         speed_knots = 0.0
                     else:
                         speed_knots = float(speed_knots)
-                    _gps_data["speed_mph"] = speed_knots * 1.15078
+                    gps_data["speed_mph"] = speed_knots * 1.15078
 
                     # Direction
-                    _gps_data["direction"] = _degrees_to_direction(msg.true_course)
-                    _gps_data["degree"] = msg.true_course
-                    if not _state_boundaries:
+                    gps_data["direction"] = degrees_to_direction(msg.true_course)
+                    gps_data["degree"] = msg.true_course
+                    if not state_boundaries:
                         print("No boundaries loaded. Exiting.")
-                        _gps_data["state"], _gps_data["state_code"] = "N/A", "N/A"
+                        gps_data["state"], gps_data["state_code"] = "N/A", "N/A"
                     else:
-                        _gps_data["state"], _gps_data["state_code"] = get_state_and_code(msg.latitude, msg.longitude)
+                        gps_data["state"], gps_data["state_code"] = get_state_and_code(msg.latitude, msg.longitude)
                 except pynmea2.ParseError:
                     pass
         except Exception:
             ser.close()
-            ser = _open_serial()
+            ser = open_serial()
 
 # 🧭 Public getter functions
 def get_latitude():
-    return _gps_data["lat"]
+    return gps_data["lat"]
 
 def get_longitude():
-    return _gps_data["lon"]
+    return gps_data["lon"]
 
 def get_speed_mph():
-    return _gps_data["speed_mph"]
+    return gps_data["speed_mph"]
 
 def get_direction():
-    return _gps_data["direction"]
+    return gps_data["direction"]
 
 def get_degree():
-    return _gps_data["degree"]
+    return  gps_data["degree"]
 
 def get_state():
-    return _gps_data["state"]
+    return gps_data["state"]
 
 def get_state_code():
-    return _gps_data["state_code"]
+    return gps_data["state_code"]
 
 if __name__ == "__main__":
     while True:
