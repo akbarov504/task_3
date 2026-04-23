@@ -12,7 +12,7 @@ from can_decoder import can_reader, can_data
     
 app = Flask(__name__)
 
-PORT = "/dev/ttyUSB3"
+PORT = "/dev/ttyUSB1"
 BAUD = 115200
 
 # Shared data (will be updated by background thread)
