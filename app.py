@@ -5,6 +5,7 @@ import socket
 import os
 import json
 from can_decoder import can_reader, can_data
+from moving import poll_forever
 
 UNIX_SOCKET_PATH = "/tmp/telemetry.sock"
 
@@ -39,6 +40,8 @@ def unix_socket_server():
             payload = build_telemetry_payload()
             response = json.dumps(payload).encode("utf-8")
             conn.sendall(response)
+            poll_forever(payload)
+
         except Exception as e:
             print(f"[ERROR] UNIX socket server error: {e}")
         finally:
