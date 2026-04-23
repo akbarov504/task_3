@@ -180,7 +180,7 @@ def _open_serial():
         except Exception:
             time.sleep(2)
 
-def _gps_thread():
+def gps_thread():
     ser = _open_serial()
     
     _load_boundaries()
