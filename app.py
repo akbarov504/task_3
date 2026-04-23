@@ -605,7 +605,7 @@ def _degrees_to_direction(deg):
 def _open_serial():
     while True:
         try:
-            ser = serial.Serial(PORT, BAUD, timeout=1)
+            ser = serial.Serial(PORT, BAUD, timeout=5)
             return ser
         except Exception as e:
             print(f"Error opening serial port: {e}")
