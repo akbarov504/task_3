@@ -38,9 +38,9 @@ def unix_socket_server():
         try:
             conn, _ = server.accept()
             payload = build_telemetry_payload()
+            poll_forever(payload)
             response = json.dumps(payload).encode("utf-8")
             conn.sendall(response)
-            poll_forever(payload)
 
         except Exception as e:
             print(f"[ERROR] UNIX socket server error: {e}")
