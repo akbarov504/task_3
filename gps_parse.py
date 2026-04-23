@@ -5,8 +5,14 @@ import threading
 import os
 import json
 
+import threading
+from flask import Flask, jsonify
+from can_decoder import can_reader, can_data
 
-PORT = "/dev/ttyUSB1"
+    
+app = Flask(__name__)
+
+PORT = "/dev/ttyUSB3"
 BAUD = 115200
 
 # Shared data (will be updated by background thread)
@@ -178,7 +184,7 @@ def _open_serial():
         try:
             ser = serial.Serial(PORT, BAUD, timeout=1)
             return ser
-        except Exception:
+        except serial.SerialException:
             time.sleep(2)
 
 def _gps_thread():
@@ -214,14 +220,15 @@ def _gps_thread():
                         _gps_data["state"], _gps_data["state_code"] = get_state_and_code(msg.latitude, msg.longitude)
                 except pynmea2.ParseError:
                     pass
-        except Exception:
+        except serial.SerialException:
             ser.close()
             ser = _open_serial()
 
 # Start background GPS reading when module is imported
-def start_gps_thread():
-    thread = threading.Thread(target=_gps_thread, daemon=True)
-    thread.start()
+thread = threading.Thread(target=_gps_thread, daemon=True)
+thread.start()
+can_thread = threading.Thread(target=can_reader, daemon=True)
+can_thread.start()
 
 # 🧭 Public getter functions
 def get_latitude():
@@ -245,7 +252,18 @@ def get_state():
 def get_state_code():
     return _gps_data["state_code"]
 
+@app.route("/api/telemetry", methods=["GET"])
+def get_telemetry():
+    print(can_data)
+    print(_gps_data)
+
+    return jsonify({
+        "can": can_data,
+        "gps": _gps_data
+    })
+
 if __name__ == "__main__":
+    app.run(port=8080, debug=True)
     while True:
         print(f"Lat: {get_latitude():.6f}, Lon: {get_longitude():.6f}, Speed: {get_speed_mph():.1f} mph, Dir: {get_direction()} ({get_degree()}°), State: {get_state()} ({get_state_code()})")
         time.sleep(1)
