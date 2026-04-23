@@ -2,6 +2,8 @@ import can
 import time
 import threading
 import re
+import subprocess
+import sys
 from datetime import datetime, timezone
 from flask import Flask, jsonify
 
@@ -15,6 +17,12 @@ VIN_REQUEST_INTERVAL = 30.0
 PGN_REQUEST = 0x00EA00
 PGN_VIN = 0x00FEEC
 PGN_ENGINE_HOURS = 0x00FEE5
+
+CHANNEL = "can0"
+INTERFACE = "socketcan"
+BITRATE = 250000
+DBITRATE = 250000
+USE_FD = False   # Agar sening can0 FD bo'lmasa False qoladi, FD bo'lsa True qilasan
 
 data = {
     "vehicle_speed": 0.0,        # mph
@@ -47,6 +55,52 @@ vin_tp_active = False
 
 last_engine_hours_request_time = 0.0
 last_vin_request_time = 0.0
+
+def ensure_can_interface():
+    """can0 up ekanini tekshiradi, down bo'lsa avtomatik up qiladi."""
+    try:
+        result = subprocess.run(
+            ["ip", "link", "show", CHANNEL],
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            print(f"[ERROR] {CHANNEL} topilmadi.")
+            sys.exit(1)
+
+        if "state UP" in result.stdout:
+            print(f"[INFO] {CHANNEL} already UP.")
+            return
+
+        print(f"[INFO] {CHANNEL} down. Bringing it up...")
+
+        subprocess.run(["sudo", "ip", "link", "set", CHANNEL, "down"], check=False)
+
+        if USE_FD:
+            subprocess.run([
+                "sudo", "ip", "link", "set", CHANNEL, "type", "can",
+                "bitrate", str(BITRATE),
+                "dbitrate", str(DBITRATE),
+                "fd", "on"
+            ], check=True)
+        else:
+            subprocess.run([
+                "sudo", "ip", "link", "set", CHANNEL, "type", "can",
+                "bitrate", str(BITRATE)
+            ], check=True)
+
+        subprocess.run(["sudo", "ip", "link", "set", CHANNEL, "up"], check=True)
+
+        time.sleep(0.5)
+        print(f"[SUCCESS] {CHANNEL} is now UP.")
+
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Could not configure {CHANNEL}: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] Unexpected error while configuring {CHANNEL}: {e}")
+        sys.exit(1)
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -202,117 +256,148 @@ def consume_vin_tp_data(msg_data: bytes) -> None:
         vin_done = True
         vin_tp_active = False
 
+def create_bus():
+    ensure_can_interface()
+
+    if USE_FD:
+        return can.interface.Bus(
+            channel=CHANNEL,
+            interface=INTERFACE,
+            bitrate=BITRATE,
+            fd=True
+        )
+    else:
+        return can.interface.Bus(
+            channel=CHANNEL,
+            interface=INTERFACE
+        )
+
 def can_reader() -> None:
     global last_msg_time, was_off, trip_start_total_distance_miles
     global fuel_tank_1, fuel_tank_2
     global last_engine_hours_request_time, last_vin_request_time
 
-    bus = can.interface.Bus(channel="can0", interface="socketcan")
-
-    request_vin(bus)
-    request_engine_hours(bus)
-    now = time.time()
-    last_engine_hours_request_time = now
-    last_vin_request_time = now
-
-    print("CAN thread started")
-
     while True:
-        msg = bus.recv(timeout=1)
-        now = time.time()
+        bus = None
+        try:
+            bus = create_bus()
 
-        if now - last_engine_hours_request_time >= ENGINE_HOURS_REQUEST_INTERVAL:
-            try:
-                request_engine_hours(bus)
-            except Exception as e:
-                print(f"Engine Hours request error: {e}")
+            request_vin(bus)
+            request_engine_hours(bus)
+            now = time.time()
             last_engine_hours_request_time = now
-
-        if now - last_vin_request_time >= VIN_REQUEST_INTERVAL and not data["vin"]:
-            try:
-                request_vin(bus)
-            except Exception as e:
-                print(f"VIN request error: {e}")
             last_vin_request_time = now
 
-        if msg:
-            last_msg_time = now
-            data["timestamp"] = now_iso()
-        elif now - last_msg_time > OFF_TIMEOUT_SECONDS:
-            if data["status"] != "OFF":
-                reset_runtime()
-                was_off = True
-            continue
+            print("CAN thread started")
 
-        if not msg or not msg.is_extended_id:
-            continue
+            while True:
+                msg = bus.recv(timeout=1)
+                now = time.time()
 
-        if was_off:
-            data["status"] = "ON"
-            was_off = False
-            trip_start_total_distance_miles = None
-        else:
-            data["status"] = "ON"
+                if now - last_engine_hours_request_time >= ENGINE_HOURS_REQUEST_INTERVAL:
+                    try:
+                        request_engine_hours(bus)
+                    except Exception as e:
+                        print(f"Engine Hours request error: {e}")
+                    last_engine_hours_request_time = now
 
-        pgn = extract_pgn(msg.arbitration_id)
-        if pgn == 61444:
-            data["engine_speed"] = decode_rpm(msg.data)
-            data["engine_load"] = decode_engine_load(msg.data)
+                if now - last_vin_request_time >= VIN_REQUEST_INTERVAL and not data["vin"]:
+                    try:
+                        request_vin(bus)
+                    except Exception as e:
+                        print(f"VIN request error: {e}")
+                    last_vin_request_time = now
 
-        elif pgn == 65265:
-            speed_kmh = decode_speed_kmh(msg.data)
-            if speed_kmh is not None:
-                speed_mph = kmh_to_mph(speed_kmh)
-                data["vehicle_speed"] = speed_mph
-                data["wheel_based_speed"] = speed_mph
+                if msg:
+                    last_msg_time = now
+                    data["timestamp"] = now_iso()
+                elif now - last_msg_time > OFF_TIMEOUT_SECONDS:
+                    if data["status"] != "OFF":
+                        reset_runtime()
+                        was_off = True
+                    continue
 
-        elif pgn == 65262:
-            temp = decode_temp(msg.data)
-            if temp is not None:
-                data["engine_temp"] = temp
+                if not msg or not msg.is_extended_id:
+                    continue
 
-        elif pgn == 65276:
-            f = decode_fuel(msg.data)
-            if f is not None:
-                fuel_tank_1 = f
+                if was_off:
+                    data["status"] = "ON"
+                    was_off = False
+                    trip_start_total_distance_miles = None
+                else:
+                    data["status"] = "ON"
 
-        elif pgn == 65277:
-            f = decode_fuel(msg.data)
-            if f is not None:
-                fuel_tank_2 = f
+                pgn = extract_pgn(msg.arbitration_id)
+                if pgn == 61444:
+                    data["engine_speed"] = decode_rpm(msg.data)
+                    data["engine_load"] = decode_engine_load(msg.data)
 
-        elif pgn == 65248:
-            dist_km = decode_distance_km(msg.data)
-            if dist_km is not None:
-                dist_miles = km_to_miles(dist_km)
-                data["total_distance"] = round(dist_miles, 2)
+                elif pgn == 65265:
+                    speed_kmh = decode_speed_kmh(msg.data)
+                    if speed_kmh is not None:
+                        speed_mph = kmh_to_mph(speed_kmh)
+                        data["vehicle_speed"] = speed_mph
+                        data["wheel_based_speed"] = speed_mph
 
-                if trip_start_total_distance_miles is None:
-                    trip_start_total_distance_miles = dist_miles
+                elif pgn == 65262:
+                    temp = decode_temp(msg.data)
+                    if temp is not None:
+                        data["engine_temp"] = temp
 
-                if dist_miles >= trip_start_total_distance_miles:
-                    data["trip_distance"] = dist_miles - trip_start_total_distance_miles
+                elif pgn == 65276:
+                    f = decode_fuel(msg.data)
+                    if f is not None:
+                        fuel_tank_1 = f
 
-        elif pgn == 65253:
-            h = decode_engine_hours(msg.data)
-            if h is not None:
-                data["engine_hours"] = h
+                elif pgn == 65277:
+                    f = decode_fuel(msg.data)
+                    if f is not None:
+                        fuel_tank_2 = f
 
-        elif pgn == 65110:
-            d = decode_def(msg.data)
-            if d is not None:
-                data["def_level"] = d
+                elif pgn == 65248:
+                    dist_km = decode_distance_km(msg.data)
+                    if dist_km is not None:
+                        dist_miles = km_to_miles(dist_km)
+                        data["total_distance"] = round(dist_miles, 2)
 
-        elif pgn == 0xEC00:
-            start_vin_tp_if_matches(msg.data)
+                        if trip_start_total_distance_miles is None:
+                            trip_start_total_distance_miles = dist_miles
 
-        elif pgn == 0xEB00:
-            consume_vin_tp_data(msg.data)
+                        if dist_miles >= trip_start_total_distance_miles:
+                            data["trip_distance"] = dist_miles - trip_start_total_distance_miles
 
-        if fuel_tank_1 is not None and fuel_tank_2 is not None:
-            data["fuel_level"] = (fuel_tank_1 + fuel_tank_2) / 2
-        elif fuel_tank_1 is not None:
-            data["fuel_level"] = fuel_tank_1
+                elif pgn == 65253:
+                    h = decode_engine_hours(msg.data)
+                    if h is not None:
+                        data["engine_hours"] = h
+
+                elif pgn == 65110:
+                    d = decode_def(msg.data)
+                    if d is not None:
+                        data["def_level"] = d
+
+                elif pgn == 0xEC00:
+                    start_vin_tp_if_matches(msg.data)
+
+                elif pgn == 0xEB00:
+                    consume_vin_tp_data(msg.data)
+
+                if fuel_tank_1 is not None and fuel_tank_2 is not None:
+                    data["fuel_level"] = (fuel_tank_1 + fuel_tank_2) / 2
+                elif fuel_tank_1 is not None:
+                    data["fuel_level"] = fuel_tank_1
+
+        except Exception as e:
+            print(f"[ERROR] CAN reader error: {e}")
+            data["status"] = "OFF"
+            time.sleep(2)
+
+        finally:
+            try:
+                if bus is not None:
+                    bus.shutdown()
+            except Exception:
+                pass
 
 @app.route("/api/telemetry", methods=["GET"])
 def get_data():
