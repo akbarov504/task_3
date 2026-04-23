@@ -8,20 +8,18 @@ from can_decoder import can_reader, can_data
 
 UNIX_SOCKET_PATH = "/tmp/telemetry.sock"
 
-gps_info = {
-    "latitude": gps_parse.get_latitude(),
-    "longitude": gps_parse.get_longitude(),
-    "speed_mph": gps_parse.get_speed_mph(),
-    "direction": gps_parse.get_direction(),
-    "degree": gps_parse.get_degree(),
-    "state": gps_parse.get_state(),
-    "state_code": gps_parse.get_state_code()
-}
-
 def build_telemetry_payload():
     return {
         "can": can_data,
-        "gps": gps_info
+        "gps": {
+            "latitude": gps_parse.get_latitude(),
+            "longitude": gps_parse.get_longitude(),
+            "speed_mph": gps_parse.get_speed_mph(),
+            "direction": gps_parse.get_direction(),
+            "degree": gps_parse.get_degree(),
+            "state": gps_parse.get_state(),
+            "state_code": gps_parse.get_state_code()
+        }
     }
 
 def unix_socket_server():
