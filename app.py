@@ -609,7 +609,7 @@ def _open_serial():
             ser = serial.Serial(PORT, BAUD, timeout=1)
             print(f"[INFO] GPS serial opened: {PORT}")
             return ser
-        except serial.SerialException:
+        except Exception:
             print(f"[WARN] GPS serial not available: {PORT}, retrying...")
             time.sleep(2)
 
