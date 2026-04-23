@@ -34,11 +34,11 @@ def unix_socket_server():
     print(f"[INFO] UNIX socket listening: {UNIX_SOCKET_PATH}")
 
     while True:
+        print("[INFO] Waiting for a client to connect...")
         conn = None
         try:
             conn, _ = server.accept()
             payload = build_telemetry_payload()
-            print(f"[INFO] Sending telemetry payload: {payload}")
             response = json.dumps(payload).encode("utf-8")
             conn.sendall(response)
 
