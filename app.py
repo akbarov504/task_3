@@ -38,7 +38,7 @@ def unix_socket_server():
         try:
             conn, _ = server.accept()
             payload = build_telemetry_payload()
-            poll_forever(payload)
+            print(f"[INFO] Sending telemetry payload: {payload}")
             response = json.dumps(payload).encode("utf-8")
             conn.sendall(response)
 
