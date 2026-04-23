@@ -34,7 +34,7 @@ def unix_socket_server():
     print(f"[INFO] UNIX socket listening: {UNIX_SOCKET_PATH}")
 
     while True:
-        print("[INFO] Waiting for a client to connect...")
+        
         conn = None
         try:
             conn, _ = server.accept()
@@ -58,6 +58,7 @@ unix_socket_thread = threading.Thread(target=unix_socket_server, daemon=True)
 unix_socket_thread.start()
 
 while True:
+    poll_forever(build_telemetry_payload())
     print("CAN Data:", can_data)
     print(f"Lat: {gps_parse.get_latitude():.6f}, Lon: {gps_parse.get_longitude():.6f}, Speed: {gps_parse.get_speed_mph():.1f} mph, Dir: {gps_parse.get_direction()} ({gps_parse.get_degree()}°), State: {gps_parse.get_state()} ({gps_parse.get_state_code()})")
     time.sleep(1)
