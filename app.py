@@ -7,6 +7,9 @@ app = Flask(__name__)
 
 @app.route("/api/telemetry", methods=["GET"])
 def get_telemetry():
+    print(can_data)
+    print(_gps_data)
+
     return jsonify({
         "can": can_data,
         "gps": _gps_data
