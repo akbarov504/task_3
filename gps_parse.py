@@ -5,12 +5,6 @@ import threading
 import os
 import json
 
-import threading
-from flask import Flask, jsonify
-from can_decoder import can_reader, can_data
-
-    
-app = Flask(__name__)
 
 PORT = "/dev/ttyUSB1"
 BAUD = 115200
@@ -227,8 +221,6 @@ def _gps_thread():
 # Start background GPS reading when module is imported
 thread = threading.Thread(target=_gps_thread, daemon=True)
 thread.start()
-can_thread = threading.Thread(target=can_reader, daemon=True)
-can_thread.start()
 
 # 🧭 Public getter functions
 def get_latitude():
@@ -252,18 +244,7 @@ def get_state():
 def get_state_code():
     return _gps_data["state_code"]
 
-@app.route("/api/telemetry", methods=["GET"])
-def get_telemetry():
-    print(can_data)
-    print(_gps_data)
-
-    return jsonify({
-        "can": can_data,
-        "gps": _gps_data
-    })
-
 if __name__ == "__main__":
-    app.run(port=8080, debug=True)
     while True:
         print(f"Lat: {get_latitude():.6f}, Lon: {get_longitude():.6f}, Speed: {get_speed_mph():.1f} mph, Dir: {get_direction()} ({get_degree()}°), State: {get_state()} ({get_state_code()})")
         time.sleep(1)
