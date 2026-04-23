@@ -429,7 +429,7 @@ def can_reader() -> None:
 # =========================
 # GPS CONFIG
 # =========================
-PORT = "/dev/ttyUSB1"
+PORT = "/dev/ttyUSB3"
 BAUD = 115200
 GPS_READ_TIMEOUT = 1
 
