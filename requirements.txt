@@ -1,2 +1,4 @@
 python-can
 flask
+serial
+pynmea2
