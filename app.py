@@ -1,4 +1,5 @@
 import threading
+import time
 import gps_parse
 from flask import Flask, jsonify
 from can_decoder import can_reader, can_data
@@ -27,3 +28,7 @@ if __name__ == "__main__":
     can_thread.start()
 
     app.run(port=8080, debug=True)
+
+    while True:
+        print(f"Lat: {gps_parse.get_latitude():.6f}, Lon: {gps_parse.get_longitude():.6f}, Speed: {gps_parse.get_speed_mph():.1f} mph, Dir: {gps_parse.get_direction()} ({gps_parse.get_degree()}°), State: {gps_parse.get_state()} ({gps_parse.get_state_code()})")
+        time.sleep(1)
