@@ -264,7 +264,6 @@ class SimpleEventDetector:
 detector = SimpleEventDetector()
 
 def poll_forever(payload):
-    print("[INFO] Starting event detection loop...")
     try:
         item = fetch_combined_data(payload["can"], payload["gps"])
         print("RAW DATA:", item)
