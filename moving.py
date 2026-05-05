@@ -207,6 +207,7 @@ class SimpleEventDetector:
             "deviceDateTime": event["timestamp"],
             "latitude": event["lat"],
             "longitude": event["lon"],
+            "odometer": event["current_odometer"],
             "state": "AR",
             "location": "Arzon State",
             "direction": "NW",
