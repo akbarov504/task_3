@@ -225,6 +225,7 @@ class SimpleEventDetector:
             )
             print(f"[SEND] status={response.status_code}, event={event['event_type']}, state={event['state']}")
             print(f"[SEND BODY] {body}")
+            print(f"[SEND RESPONSE] {response.text}")
 
             self.last_sent_state = event["state"]
             self.last_sent_event_type = event["event_type"]
