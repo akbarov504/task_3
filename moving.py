@@ -90,9 +90,9 @@ class SimpleEventDetector:
     def __init__(self):
         self.lock = Lock()
 
-        self.asset_state = "STOPPED"
+        self.asset_state = "STOP_MOVING"
         self.last_event = {
-            "event_type": "STOPPED",
+            "event_type": "STOP_MOVING",
             "timestamp": None,
             "speed_mph": 0.0,
             "engine_status": "OFF",
@@ -142,33 +142,33 @@ class SimpleEventDetector:
                 idle_seconds = (timestamp - self.idle_start_time).total_seconds()
 
                 if idle_seconds >= IDLE_TIME_LIMIT:
-                    if prev_state != "ENGINE_IDLE":
-                        event_type = "ENGINE_IDLE"
-                        self.asset_state = "ENGINE_IDLE"
+                    if prev_state != "IDLE":
+                        event_type = "IDLE"
+                        self.asset_state = "IDLE"
                         message = f"Engine became idle after {int(idle_seconds)} seconds"
                     else:
-                        event_type = "ENGINE_IDLE"
-                        self.asset_state = "ENGINE_IDLE"
+                        event_type = "IDLE"
+                        self.asset_state = "IDLE"
                         message = f"Engine idle for {int(idle_seconds)} seconds"
                 else:
                     if prev_state == "MOVING":
-                        event_type = "STOPPED"
-                        self.asset_state = "STOPPED"
+                        event_type = "STOP_MOVING"
+                        self.asset_state = "STOP_MOVING"
                         message = "Vehicle stopped moving"
                     else:
-                        event_type = "STOPPED"
-                        self.asset_state = "STOPPED"
+                        event_type = "STOP_MOVING"
+                        self.asset_state = "STOP_MOVING"
                         message = f"Vehicle stopped, idle timer running ({int(idle_seconds)} sec)"
             else:
                 self.idle_start_time = None
 
-                if prev_state != "STOPPED":
-                    event_type = "STOPPED"
-                    self.asset_state = "STOPPED"
+                if prev_state != "STOP_MOVING":
+                    event_type = "STOP_MOVING"
+                    self.asset_state = "STOP_MOVING"
                     message = "Vehicle stopped and engine off"
                 else:
-                    event_type = "STOPPED"
-                    self.asset_state = "STOPPED"
+                    event_type = "STOP_MOVING"
+                    self.asset_state = "STOP_MOVING"
                     message = "Vehicle stopped and engine off"
 
         event = {
@@ -189,7 +189,7 @@ class SimpleEventDetector:
         if self.last_sent_state != event["state"]:
             return True
 
-        if self.last_sent_event_type != event["event_type"] and event["event_type"] in ("START_MOVING", "ENGINE_IDLE", "STOPPED"):
+        if self.last_sent_event_type != event["event_type"] and event["event_type"] in ("START_MOVING", "IDLE", "STOP_MOVING"):
             return True
 
         return False
