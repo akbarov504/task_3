@@ -2,7 +2,7 @@ import uuid
 import requests
 from threading import Lock
 from datetime import datetime, timezone
-from token_manager import get_valid_token
+from utils.token_manager import get_valid_token
 
 SPEED_THRESHOLD_MPH = 5.0
 IDLE_TIME_LIMIT = 10

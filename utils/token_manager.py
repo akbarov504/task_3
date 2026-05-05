@@ -3,7 +3,7 @@ import json
 import fcntl
 import requests
 from datetime import datetime, timedelta
-from config import TOKEN_FILE_PATH, API_BASE_STREAM, TOKEN_REFRESH_MARGIN
+from core.config import TOKEN_FILE_PATH, API_BASE_STREAM, TOKEN_REFRESH_MARGIN
 from typing import Optional
 
 
