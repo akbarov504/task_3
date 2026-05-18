@@ -6,6 +6,9 @@ import os
 import json
 from can_decoder import can_reader, can_data
 from moving import poll_forever
+from flask import Flask, jsonify
+
+app = Flask(__name__)
 
 UNIX_SOCKET_PATH = "/tmp/telemetry.sock"
 
@@ -51,14 +54,37 @@ def unix_socket_server():
             except Exception:
                 pass
 
-can_thread = threading.Thread(target=can_reader, daemon=True)
-can_thread.start()
+def main_run():
+    while True:
+        poll_forever(build_telemetry_payload())
+        print("CAN Data:", can_data)
+        print(f"Lat: {gps_parse.get_latitude():.6f}, Lon: {gps_parse.get_longitude():.6f}, Speed: {gps_parse.get_speed_mph():.1f} mph, Dir: {gps_parse.get_direction()} ({gps_parse.get_degree()}°), State: {gps_parse.get_state()} ({gps_parse.get_state_code()})")
+        time.sleep(1)
 
-unix_socket_thread = threading.Thread(target=unix_socket_server, daemon=True)
-unix_socket_thread.start()
+@app.route("/info/can", methods=["GET"])
+def can_info_api():
+    return jsonify(can_data)
 
-while True:
-    poll_forever(build_telemetry_payload())
-    print("CAN Data:", can_data)
-    print(f"Lat: {gps_parse.get_latitude():.6f}, Lon: {gps_parse.get_longitude():.6f}, Speed: {gps_parse.get_speed_mph():.1f} mph, Dir: {gps_parse.get_direction()} ({gps_parse.get_degree()}°), State: {gps_parse.get_state()} ({gps_parse.get_state_code()})")
-    time.sleep(1)
+@app.route("/info/gps", methods=["GET"])
+def gps_info_api():
+    return jsonify({
+            "latitude": gps_parse.get_latitude(),
+            "longitude": gps_parse.get_longitude(),
+            "speed_mph": gps_parse.get_speed_mph(),
+            "direction": gps_parse.get_direction(),
+            "degree": gps_parse.get_degree(),
+            "state": gps_parse.get_state(),
+            "state_code": gps_parse.get_state_code()
+        })
+
+if __name__ == "__main__":
+    can_thread = threading.Thread(target=can_reader, daemon=True)
+    can_thread.start()
+
+    unix_socket_thread = threading.Thread(target=unix_socket_server, daemon=True)
+    unix_socket_thread.start()
+
+    main_run_thread = threading.Thread(target=main_run, daemon=True)
+    main_run_thread.start()
+
+    app.run(debug=True)
