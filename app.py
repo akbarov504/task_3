@@ -61,11 +61,11 @@ def main_run():
         print(f"Lat: {gps_parse.get_latitude():.6f}, Lon: {gps_parse.get_longitude():.6f}, Speed: {gps_parse.get_speed_mph():.1f} mph, Dir: {gps_parse.get_direction()} ({gps_parse.get_degree()}°), State: {gps_parse.get_state()} ({gps_parse.get_state_code()})")
         time.sleep(1)
 
-@app.route("/info/can", methods=["GET"])
+@app.route("/api/info/can", methods=["GET"])
 def can_info_api():
     return jsonify(can_data)
 
-@app.route("/info/gps", methods=["GET"])
+@app.route("/api/info/gps", methods=["GET"])
 def gps_info_api():
     return jsonify({
             "latitude": gps_parse.get_latitude(),
