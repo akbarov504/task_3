@@ -16,8 +16,8 @@ _gps_data = {
     "speed_mph": 0.0,
     "direction": "NW",
     "degree": 0.0,
-    "state": "TX",
-    "state_code": "Texas"
+    "state": "Texas",
+    "state_code": "TX"
 }
 
 # --- CONFIGURATION (Matching gps_parse.py) ---
