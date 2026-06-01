@@ -2,7 +2,7 @@ import uuid
 import requests
 from threading import Lock
 from datetime import datetime, timezone
-from utils.token_manager import get_valid_token
+from utils.token_manager import get_shared_token
 
 SPEED_THRESHOLD_MPH = 5.0
 IDLE_TIME_LIMIT = 10
@@ -198,7 +198,7 @@ class SimpleEventDetector:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "Authorization": f"Bearer {get_valid_token()}"
+            "Authorization": f"Bearer {get_shared_token()}"
         }
 
         body = {
