@@ -32,7 +32,9 @@ can_data = {
     "def_level": 0.0,
     "engine_hours": 0.0,
     "status": "OFF",
-    "timestamp": None
+    "timestamp": None,
+    "check_engine_status" : "OFF",
+    "active_errors" : []
 }
 
 last_msg_time = 0.0
@@ -136,6 +138,8 @@ def reset_can_runtime() -> None:
     can_data["trip_distance"] = 0.0
     can_data["status"] = "OFF"
     can_data["timestamp"] = now_iso()
+    can_data["check_engine_status"] = "OFF"
+    can_data["active_errors"] = []
 
     fuel_tank_1 = None
     fuel_tank_2 = None
@@ -146,6 +150,36 @@ def reset_can_runtime() -> None:
     vin_done = False
     vin_tp_active = False
 
+
+def decode_dm1(d: bytes):
+    if len(d) < 2:
+        return "OFF", []
+
+    lamp_status_byte = d[0]
+    mil = (lamp_status_byte >> 6) & 0x03  # Malfunction Indicator Lamp
+    rsl = (lamp_status_byte >> 4) & 0x03  # Red Stop Lamp
+    awl = (lamp_status_byte >> 2) & 0x03  # Amber Warning Lamp (Check Engine)
+    pl  = lamp_status_byte & 0x03         # Protect Lamp
+
+    lamps_on = []
+    if mil == 1: lamps_on.append("MIL (Emissions)")
+    if rsl == 1: lamps_on.append("Red Stop")
+    if awl == 1: lamps_on.append("Yellow Check")
+    if pl == 1:  lamps_on.append("Protect Lamp")
+
+    status_str = "ON: " + ", ".join(lamps_on) if lamps_on else "OFF"
+
+    errors = []
+    if len(d) >= 6:
+        if d[2] != 0x00 or d[3] != 0x00 or (d[4] & 0xFC) != 0x00:
+            spn = d[2] | (d[3] << 8) | ((d[4] & 0xE0) << 11)
+            fmi = d[4] & 0x1F
+            oc = d[5] & 0x7F
+            
+            if 0 < spn < 524287:
+                errors.append(f"SPN:{spn} FMI:{fmi} OC:{oc}")
+                
+    return status_str, errors
 
 def decode_rpm(d: bytes):
     if len(d) < 5:
@@ -207,7 +241,7 @@ def request_pgn(bus, requested_pgn: int, label: str) -> None:
     ]
 
     msg = can.Message(
-        arbitration_id=0x18EAFF00,
+        arbitration_id=0x18EAFFF9,
         data=pgn_bytes + [0xFF] * 5,
         is_extended_id=True
     )
@@ -363,6 +397,19 @@ def can_reader() -> None:
                     f = decode_fuel(msg.data)
                     if f is not None:
                         fuel_tank_2 = f
+                        
+                elif pgn == 65110:
+                    d = decode_def(msg.data)
+                    if d is not None:
+                        can_data["def_level"] = d
+
+                elif pgn == 65226:
+                    lamp_status, active_dtcs = decode_dm1(msg.data)
+                    can_data["check_engine_status"] = lamp_status
+                    can_data["active_errors"] = active_dtcs
+
+                elif pgn == 0xEC00:
+                    start_vin_tp_if_matches(msg.data)
 
                 elif pgn == 65248:
                     dist_km = decode_distance_km(msg.data)
