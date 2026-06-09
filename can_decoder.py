@@ -1,8 +1,8 @@
+import re
+import sys
 import can
 import time
-import re
 import subprocess
-import sys
 from datetime import datetime, timezone
 
 KM_TO_MILES = 0.621371
@@ -33,8 +33,13 @@ can_data = {
     "engine_hours": 0.0,
     "status": "OFF",
     "timestamp": None,
-    "check_engine_status" : "OFF",
-    "active_errors" : []
+    "check_engine_status": "OFF",
+    "active_errors": [],
+
+    "turn_signal_left": "OFF",
+    "turn_signal_right": "OFF",
+    "seat_belt": "N/A",
+    "steering_angle_rad": None,
 }
 
 last_msg_time = 0.0
@@ -99,7 +104,6 @@ def ensure_can_interface():
         print(f"[ERROR] Unexpected error while configuring {CHANNEL}: {e}")
         sys.exit(1)
 
-
 def extract_pgn(arbitration_id: int) -> int:
     pf = (arbitration_id >> 16) & 0xFF
     ps = (arbitration_id >> 8) & 0xFF
@@ -107,14 +111,11 @@ def extract_pgn(arbitration_id: int) -> int:
         return pf << 8
     return (pf << 8) | ps
 
-
 def kmh_to_mph(kmh: float) -> float:
     return kmh * KM_TO_MILES
 
-
 def km_to_miles(km: float) -> float:
     return km * KM_TO_MILES
-
 
 def sanitize_vin(raw_bytes: bytes) -> str:
     text = raw_bytes.decode("ascii", errors="ignore")
@@ -123,7 +124,6 @@ def sanitize_vin(raw_bytes: bytes) -> str:
     if matches:
         return matches[0]
     return text[:17]
-
 
 def reset_can_runtime() -> None:
     global fuel_tank_1, fuel_tank_2, trip_start_total_distance_miles
@@ -141,6 +141,11 @@ def reset_can_runtime() -> None:
     can_data["check_engine_status"] = "OFF"
     can_data["active_errors"] = []
 
+    can_data["turn_signal_left"] = "OFF"
+    can_data["turn_signal_right"] = "OFF"
+    can_data["seat_belt"] = "N/A"
+    can_data["steering_angle_rad"] = None
+
     fuel_tank_1 = None
     fuel_tank_2 = None
     trip_start_total_distance_miles = None
@@ -149,7 +154,6 @@ def reset_can_runtime() -> None:
     vin_expected_size = 0
     vin_done = False
     vin_tp_active = False
-
 
 def decode_dm1(d: bytes):
     if len(d) < 2:
@@ -187,12 +191,10 @@ def decode_rpm(d: bytes):
     raw = d[3] | (d[4] << 8)
     return None if raw >= 0xFFFA else raw * 0.125
 
-
 def decode_engine_load(d: bytes):
     if len(d) < 3:
         return None
     return None if d[2] == 0xFF else float(d[2])
-
 
 def decode_speed_kmh(d: bytes):
     if len(d) < 3:
@@ -200,18 +202,15 @@ def decode_speed_kmh(d: bytes):
     raw = d[1] | (d[2] << 8)
     return None if raw == 0xFFFF else raw * 0.00390625
 
-
 def decode_temp(d: bytes):
     if len(d) < 1:
         return None
     return None if d[0] == 0xFF else d[0] - 40
 
-
 def decode_fuel(d: bytes):
     if len(d) < 2:
         return None
     return None if d[1] == 0xFF else d[1] * 0.4
-
 
 def decode_distance_km(d: bytes):
     if len(d) < 4:
@@ -219,19 +218,63 @@ def decode_distance_km(d: bytes):
     raw = d[0] | (d[1] << 8) | (d[2] << 16) | (d[3] << 24)
     return None if raw == 0xFFFFFFFF else raw * 0.125
 
-
 def decode_engine_hours(d: bytes):
     if len(d) < 4:
         return None
     raw = d[0] | (d[1] << 8) | (d[2] << 16) | (d[3] << 24)
     return None if raw == 0xFFFFFFFF else raw * 0.05
 
-
 def decode_def(d: bytes):
     if len(d) < 1:
         return None
     return None if d[0] == 0xFF else d[0] * 0.4
 
+def decode_turn_signal(d: bytes, bit_offset: int) -> str:
+    """
+    2-bit turn signal state.
+    bit_offset — boshlang'ich bit pozitsiyasi (0-indexed, LSB first).
+
+    Measured values (SPN 2368 / 2370):
+      00 = De-activated (OFF)
+      01 = Activated    (ON)
+      10 = Fault Detected
+      11 = Not Available
+    """
+    byte_idx = bit_offset // 8
+    bit_pos  = bit_offset % 8
+    if byte_idx >= len(d):
+        return "N/A"
+    val = (d[byte_idx] >> bit_pos) & 0x03
+    return {0b00: "OFF", 0b01: "ON", 0b10: "FAULT", 0b11: "N/A"}.get(val, "N/A")
+
+def decode_seat_belt(d: bytes) -> str:
+    """
+    SPN 1856 — PGN 57344
+    Byte 0, bits 0-1:
+      00 = NOT Buckled
+      01 = Buckled
+      10 = Error
+      11 = Not Available
+    """
+    if len(d) < 1:
+        return "N/A"
+    val = d[0] & 0x03
+    return {0b00: "NOT_BUCKLED", 0b01: "BUCKLED", 0b10: "ERROR", 0b11: "N/A"}.get(val, "N/A")
+
+def decode_steering_angle(d: bytes) -> float | None:
+    """
+    SPN 1807 — PGN 61449
+    Bytes 0-1 (little-endian), 2-byte unsigned int.
+    Resolution : 1/1024 rad per bit
+    Offset     : -31.374 rad
+    0xFFFF      = Not Available
+    """
+    if len(d) < 2:
+        return None
+    raw = d[0] | (d[1] << 8)
+    if raw == 0xFFFF:
+        return None
+    return round(raw / 1024.0 - 31.374, 4)
 
 def request_pgn(bus, requested_pgn: int, label: str) -> None:
     pgn_bytes = [
@@ -248,23 +291,18 @@ def request_pgn(bus, requested_pgn: int, label: str) -> None:
     bus.send(msg)
     print(f"{label} requested")
 
-
 def request_vin(bus) -> None:
     request_pgn(bus, PGN_VIN, "VIN")
 
-
 def request_engine_hours(bus) -> None:
     request_pgn(bus, PGN_ENGINE_HOURS, "Engine Hours")
-
 
 def start_vin_tp_if_matches(msg_data: bytes) -> bool:
     global vin_expected_size, vin_buffer, vin_done, vin_tp_active
 
     if len(msg_data) < 8:
         return False
-
-    control_byte = msg_data[0]
-    if control_byte != 32:
+    if msg_data[0] != 32:
         return False
 
     target_pgn = msg_data[5] | (msg_data[6] << 8) | (msg_data[7] << 16)
@@ -297,7 +335,6 @@ def consume_vin_tp_data(msg_data: bytes) -> None:
         vin_done = True
         vin_tp_active = False
 
-
 def create_bus():
     ensure_can_interface()
 
@@ -313,7 +350,6 @@ def create_bus():
             channel=CHANNEL,
             interface=INTERFACE
         )
-
 
 def can_reader() -> None:
     global last_msg_time, was_off, trip_start_total_distance_miles
@@ -411,6 +447,9 @@ def can_reader() -> None:
                 elif pgn == 0xEC00:
                     start_vin_tp_if_matches(msg.data)
 
+                elif pgn == 0xEB00:
+                    consume_vin_tp_data(msg.data)
+
                 elif pgn == 65248:
                     dist_km = decode_distance_km(msg.data)
                     if dist_km is not None:
@@ -421,23 +460,28 @@ def can_reader() -> None:
                             trip_start_total_distance_miles = dist_miles
 
                         if dist_miles >= trip_start_total_distance_miles:
-                            can_data["trip_distance"] = round(dist_miles - trip_start_total_distance_miles, 2)
+                            can_data["trip_distance"] = round(
+                                dist_miles - trip_start_total_distance_miles, 2
+                            )
 
                 elif pgn == 65253:
                     h = decode_engine_hours(msg.data)
                     if h is not None:
                         can_data["engine_hours"] = h
 
-                elif pgn == 65110:
-                    d = decode_def(msg.data)
-                    if d is not None:
-                        can_data["def_level"] = d
+                elif pgn == 65088:
+                    can_data["turn_signal_right"] = decode_turn_signal(msg.data, bit_offset=0)
 
-                elif pgn == 0xEC00:
-                    start_vin_tp_if_matches(msg.data)
+                elif pgn == 65089:
+                    can_data["turn_signal_left"] = decode_turn_signal(msg.data, bit_offset=0)
 
-                elif pgn == 0xEB00:
-                    consume_vin_tp_data(msg.data)
+                elif pgn == 57344:
+                    can_data["seat_belt"] = decode_seat_belt(msg.data)
+
+                elif pgn == 61449:
+                    angle = decode_steering_angle(msg.data)
+                    if angle is not None:
+                        can_data["steering_angle_rad"] = angle
 
                 if fuel_tank_1 is not None and fuel_tank_2 is not None:
                     can_data["fuel_level"] = round((fuel_tank_1 + fuel_tank_2) / 2, 2)
