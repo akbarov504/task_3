@@ -3,3 +3,4 @@ flask
 serial
 pynmea2
 requests
+nuitka
