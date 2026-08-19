@@ -19,6 +19,11 @@ BITRATE = 250000
 DBITRATE = 250000
 USE_FD = False
 
+AUTO_DETECT_BITRATE = True
+CANDIDATE_BITRATES = [250000, 500000]
+BITRATE_DETECT_TIMEOUT = 2.0
+BITRATE_MIN_VALID_FRAMES = 3
+
 can_data = {
     "vehicle_speed": 0.0,
     "engine_speed": None,
@@ -59,7 +64,84 @@ last_vin_request_time = 0.0
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-def ensure_can_interface():
+def _configure_can_bitrate(channel: str, bitrate: int, dbitrate: int = None, use_fd: bool = False) -> bool:
+    try:
+        subprocess.run(["sudo", "ip", "link", "set", channel, "down"], check=False)
+
+        if use_fd:
+            subprocess.run([
+                "sudo", "ip", "link", "set", channel, "type", "can",
+                "bitrate", str(bitrate),
+                "dbitrate", str(dbitrate or bitrate),
+                "fd", "on"
+            ], check=True)
+        else:
+            subprocess.run([
+                "sudo", "ip", "link", "set", channel, "type", "can",
+                "bitrate", str(bitrate)
+            ], check=True)
+
+        subprocess.run(["sudo", "ip", "link", "set", channel, "up"], check=True)
+        time.sleep(0.3)
+        return True
+
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] {channel} ni {bitrate} bitrate bilan sozlab bo'lmadi: {e}")
+        return False
+    except Exception as e:
+        print(f"[ERROR] {channel} sozlashda kutilmagan xato: {e}")
+        return False
+
+def _bitrate_looks_valid(channel: str, timeout: float, min_valid_frames: int) -> bool:
+    test_bus = None
+    try:
+        test_bus = can.interface.Bus(channel=channel, interface=INTERFACE, receive_own_messages=False)
+        valid_count = 0
+        error_count = 0
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            msg = test_bus.recv(timeout=0.3)
+            if msg is None:
+                continue
+            if getattr(msg, "is_error_frame", False):
+                error_count += 1
+                continue
+            valid_count += 1
+            if valid_count >= min_valid_frames:
+                return True
+
+        return valid_count > 0 and error_count == 0
+
+    except Exception as e:
+        print(f"[DETECT] Tinglashda xato: {e}")
+        return False
+    finally:
+        if test_bus is not None:
+            try:
+                test_bus.shutdown()
+            except Exception:
+                pass
+
+def detect_bitrate(channel: str, candidates=None) -> int:
+    candidates = candidates or CANDIDATE_BITRATES
+    print(f"[DETECT] {channel} uchun bitrate aniqlanmoqda: {candidates}")
+
+    for bitrate in candidates:
+        print(f"[DETECT] {bitrate} sinovdan o'tkazilmoqda...")
+        if not _configure_can_bitrate(channel, bitrate):
+            continue
+        if _bitrate_looks_valid(channel, BITRATE_DETECT_TIMEOUT, BITRATE_MIN_VALID_FRAMES):
+            print(f"[DETECT] Bitrate aniqlandi: {bitrate}")
+            return bitrate
+
+    fallback = candidates[0]
+    print(f"[DETECT] Hech qanday bitrate tasdiqlanmadi, {fallback} bitrate bilan davom etiladi")
+    _configure_can_bitrate(channel, fallback)
+    return fallback
+
+def ensure_can_interface(bitrate: int = None):
+    bitrate = bitrate or BITRATE
     try:
         result = subprocess.run(
             ["ip", "link", "show", CHANNEL],
@@ -75,31 +157,13 @@ def ensure_can_interface():
             print(f"[INFO] {CHANNEL} already UP.")
             return
 
-        print(f"[INFO] {CHANNEL} down. Bringing it up...")
+        print(f"[INFO] {CHANNEL} down. Bringing it up with bitrate={bitrate}...")
 
-        subprocess.run(["sudo", "ip", "link", "set", CHANNEL, "down"], check=False)
+        if not _configure_can_bitrate(CHANNEL, bitrate, DBITRATE, USE_FD):
+            sys.exit(1)
 
-        if USE_FD:
-            subprocess.run([
-                "sudo", "ip", "link", "set", CHANNEL, "type", "can",
-                "bitrate", str(BITRATE),
-                "dbitrate", str(DBITRATE),
-                "fd", "on"
-            ], check=True)
-        else:
-            subprocess.run([
-                "sudo", "ip", "link", "set", CHANNEL, "type", "can",
-                "bitrate", str(BITRATE)
-            ], check=True)
-
-        subprocess.run(["sudo", "ip", "link", "set", CHANNEL, "up"], check=True)
-
-        time.sleep(0.5)
         print(f"[SUCCESS] {CHANNEL} is now UP.")
 
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR] Could not configure {CHANNEL}: {e}")
-        sys.exit(1)
     except Exception as e:
         print(f"[ERROR] Unexpected error while configuring {CHANNEL}: {e}")
         sys.exit(1)
@@ -336,20 +400,25 @@ def consume_vin_tp_data(msg_data: bytes) -> None:
         vin_tp_active = False
 
 def create_bus():
-    ensure_can_interface()
-
     if USE_FD:
+        ensure_can_interface(BITRATE)
+        bitrate = BITRATE
         return can.interface.Bus(
             channel=CHANNEL,
             interface=INTERFACE,
-            bitrate=BITRATE,
+            bitrate=bitrate,
             fd=True
         )
+
+    if AUTO_DETECT_BITRATE:
+        detect_bitrate(CHANNEL)
     else:
-        return can.interface.Bus(
-            channel=CHANNEL,
-            interface=INTERFACE
-        )
+        ensure_can_interface(BITRATE)
+
+    return can.interface.Bus(
+        channel=CHANNEL,
+        interface=INTERFACE
+    )
 
 def can_reader() -> None:
     global last_msg_time, was_off, trip_start_total_distance_miles
