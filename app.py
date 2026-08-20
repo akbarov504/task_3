@@ -87,4 +87,4 @@ if __name__ == "__main__":
     main_run_thread = threading.Thread(target=main_run, daemon=True)
     main_run_thread.start()
 
-    app.run(debug=True)
+    app.run(debug=True, use_reloader=False)

@@ -64,9 +64,34 @@ last_vin_request_time = 0.0
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+def _interface_is_up(channel: str) -> bool:
+    result = subprocess.run(
+        ["ip", "link", "show", channel],
+        capture_output=True,
+        text=True
+    )
+    return result.returncode == 0 and "state UP" in result.stdout
+
+def _set_link_up_with_retry(channel: str, attempts: int = 3, delay: float = 0.4) -> bool:
+    last_err = ""
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(
+            ["sudo", "ip", "link", "set", channel, "up"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            return True
+        last_err = result.stderr.strip()
+        print(f"[WARN] {channel} up ({attempt}/{attempts}-urinish) muvaffaqiyatsiz: {last_err}")
+        time.sleep(delay)
+    print(f"[ERROR] {channel} ni up qilib bo'lmadi: {last_err}")
+    return False
+
 def _configure_can_bitrate(channel: str, bitrate: int, dbitrate: int = None, use_fd: bool = False) -> bool:
     try:
         subprocess.run(["sudo", "ip", "link", "set", channel, "down"], check=False)
+        time.sleep(0.2)
 
         if use_fd:
             subprocess.run([
@@ -81,7 +106,9 @@ def _configure_can_bitrate(channel: str, bitrate: int, dbitrate: int = None, use
                 "bitrate", str(bitrate)
             ], check=True)
 
-        subprocess.run(["sudo", "ip", "link", "set", channel, "up"], check=True)
+        if not _set_link_up_with_retry(channel):
+            return False
+
         time.sleep(0.3)
         return True
 
@@ -399,21 +426,28 @@ def consume_vin_tp_data(msg_data: bytes) -> None:
         vin_done = True
         vin_tp_active = False
 
+_cached_bitrate = None
+
 def create_bus():
+    global _cached_bitrate
+
     if USE_FD:
         ensure_can_interface(BITRATE)
-        bitrate = BITRATE
         return can.interface.Bus(
             channel=CHANNEL,
             interface=INTERFACE,
-            bitrate=bitrate,
+            bitrate=BITRATE,
             fd=True
         )
 
     if AUTO_DETECT_BITRATE:
-        detect_bitrate(CHANNEL)
+        if _cached_bitrate is not None and _interface_is_up(CHANNEL):
+            print(f"[DETECT] {CHANNEL} allaqachon UP, keshdagi {_cached_bitrate} bitrate ishlatiladi")
+        else:
+            _cached_bitrate = detect_bitrate(CHANNEL)
     else:
         ensure_can_interface(BITRATE)
+        _cached_bitrate = BITRATE
 
     return can.interface.Bus(
         channel=CHANNEL,
@@ -424,9 +458,11 @@ def can_reader() -> None:
     global last_msg_time, was_off, trip_start_total_distance_miles
     global fuel_tank_1, fuel_tank_2
     global last_engine_hours_request_time, last_vin_request_time
+    global _cached_bitrate
 
     while True:
         bus = None
+        bus_had_traffic = False
         try:
             bus = create_bus()
 
@@ -441,6 +477,9 @@ def can_reader() -> None:
             while True:
                 msg = bus.recv(timeout=1)
                 now = time.time()
+
+                if msg:
+                    bus_had_traffic = True
 
                 if now - last_engine_hours_request_time >= ENGINE_HOURS_REQUEST_INTERVAL:
                     try:
@@ -560,6 +599,10 @@ def can_reader() -> None:
         except Exception as e:
             print(f"[ERROR] CAN reader error: {e}")
             can_data["status"] = "OFF"
+            if not bus_had_traffic:
+                if _cached_bitrate is not None:
+                    print("[DETECT] Traffik kelmadi, keshlangan bitrate bekor qilinmoqda")
+                _cached_bitrate = None
             time.sleep(2)
 
         finally:
